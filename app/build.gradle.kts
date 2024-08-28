@@ -65,6 +65,24 @@ tasks.named<Test>("test") {
     useJUnitPlatform()
 }
 
+tasks.create<JavaExec>("runProfile1") {
+    mainClass.set("ar.edu.austral.inf.sd.ApplicationKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args = listOf("--spring.config.location=classpath:/application-test1.properties")
+}
+
+tasks.create<JavaExec>("runProfile2") {
+    mainClass.set("ar.edu.austral.inf.sd.ApplicationKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args = listOf("--spring.config.location=classpath:/application-test2.properties")
+}
+
+tasks.create<JavaExec>("runProfile3") {
+    mainClass.set("ar.edu.austral.inf.sd.ApplicationKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args = listOf("--spring.config.location=classpath:/application-test3.properties")
+}
+
 tasks.create("openApiGenerateServer", org.openapitools.generator.gradle.plugin.tasks.GenerateTask::class.java) {
     templateDir.set(project.layout.projectDirectory.dir("src/main/openapi-generator").toString())
     generatorName.set("kotlin-spring")
