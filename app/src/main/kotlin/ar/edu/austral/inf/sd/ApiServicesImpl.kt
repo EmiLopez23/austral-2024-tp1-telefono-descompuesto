@@ -165,13 +165,15 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         resultReady.await(timeout.toLong(), TimeUnit.SECONDS)
         resultReady = CountDownLatch(1)
 
-        if (currentMessageResponse.value==null){
+        val currentMessage = currentMessageResponse.value
+
+        if (currentMessage==null){
             timeoutsAmount++
             //HTTP 504 relay was not received within the expected time
             throw GatewayTimeoutException("Relay was not received on time")
         }
 
-        if(doHash(body.encodeToByteArray(), nodeSalt) !== currentMessageResponse.value!!.receivedHash){
+        if(doHash(body.encodeToByteArray(), nodeSalt) != currentMessage.receivedHash){
             //HTTP 503 message didn't return as expected
             throw ServiceUnavailableException("Response not received")
         }
@@ -207,8 +209,10 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         else{
             val previousNode= nodes[nodeIndex+1]
             val nextNode= nodes[nodeIndex-1]
+
             val url="http://${previousNode.host}:${previousNode.port}/reconfigure" +
                     "?uuid=${previousNode.uuid}&salt=${previousNode.salt}&nextHost=${nextNode.host}&nextPort=${nextNode.port}"
+
             val restTemplate= RestTemplate()
             val httpHeaders = HttpHeaders().apply {
                 add("X-Game-Timestamp", xGameTimestamp.toString())
@@ -233,7 +237,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         nextPort: Int?,
         xGameTimestamp: Int?
     ): String {
-        if (uuid == nodeUUID && salt == nodeSalt){
+        if (uuid != nodeUUID || salt != nodeSalt){
             throw BadRequestException("Invalid data")
         }
 
@@ -244,7 +248,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     internal fun registerToServer(registerHost: String, registerPort: Int) {
         val restTemplate= RestTemplate()
         val registerUrl = "http://$registerHost:$registerPort/register-node"
-        val registerParams = "?host=localhost&port=$myServerPort&name=$myServerName&uuid=$nodeUUID&salt=$nodeSalt&name=$myServerName"
+        val registerParams = "?host=localhost&port=$myServerPort&name=$myServerName&uuid=$nodeUUID&salt=$nodeSalt"
         val url = registerUrl + registerParams
 
 
