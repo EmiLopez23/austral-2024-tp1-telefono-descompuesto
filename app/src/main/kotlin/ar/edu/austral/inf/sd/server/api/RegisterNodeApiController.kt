@@ -35,6 +35,6 @@ class RegisterNodeApiController(@Autowired(required = true) val service: Registe
         produces = ["application/json"]
     )
     fun registerNode( @Valid @RequestParam(value = "host", required = false) host: kotlin.String?, @Valid @RequestParam(value = "port", required = false) port: kotlin.Int?, @Valid @RequestParam(value = "uuid", required = false) uuid: java.util.UUID?, @Valid @RequestParam(value = "salt", required = false) salt: kotlin.String?, @Valid @RequestParam(value = "name", required = false) name: kotlin.String?): ResponseEntity<RegisterResponse> {
-        return ResponseEntity(service.registerNode(host, port, uuid, salt, name), HttpStatus.valueOf(200))
+        return service.registerNode(host, port, uuid, salt, name)
     }
 }

@@ -19,9 +19,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpEntity
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
+import org.springframework.util.LinkedMultiValueMap
+import org.springframework.util.MultiValueMap
+import org.springframework.web.client.RestClientException
+import org.springframework.web.client.RestTemplate
+import org.springframework.web.client.postForEntity
 import org.springframework.web.context.request.RequestContextHolder
 import org.springframework.web.context.request.ServletRequestAttributes
 import java.security.MessageDigest
@@ -29,6 +37,7 @@ import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+import kotlin.system.exitProcess
 
 @Component
 class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService, UnregisterNodeApiService,
@@ -42,19 +51,25 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     private val myServerHost: String = "localhost"
     @Value("\${server.timeout:20}")
     private val timeout: Int = 20
+    @Value("\${register.host:localhost}")
+    private val registerHost: String = "localhost"
+    @Value("\${register.port:8081}")
+    private val registerPort: Int = 8081
 
 
+    private var timeoutsAmount = 0
     private val nodes: MutableList<Node> = mutableListOf()
+
 
     private var xGameTimestamp: Int = 0
     private var nextNode: RegisterResponse? = null
 
-    private var timestamp=-1
+    private var nodeTimeout = -1
+    private var nodeTimestamp = -1
     private var nodeUUID=UUID.randomUUID()
     private val nodeSalt = newSalt()
     private val messageDigest = MessageDigest.getInstance("SHA-512")
 
-    private var timeoutsAmmount = 0
 
     private val currentRequest
         get() = (RequestContextHolder.getRequestAttributes() as ServletRequestAttributes).request
@@ -128,7 +143,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
 
     override fun sendMessage(body: String): PlayResponse {
         //HTTP 400 game is closed and can't receive more plays
-        if (timeoutsAmmount > timeout) throw BadRequestException("Timeout reached, game is closed")
+        if (timeoutsAmount > timeout) throw BadRequestException("Timeout reached, game is closed")
 
         if (nodes.isEmpty()) {
             // if node list is empty then start with me as the next node
@@ -151,7 +166,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         resultReady = CountDownLatch(1)
 
         if (currentMessageResponse.value==null){
-            timeoutsAmmount++
+            timeoutsAmount++
             //HTTP 504 relay was not received within the expected time
             throw GatewayTimeoutException("Relay was not received on time")
         }
@@ -162,7 +177,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         }
 
         if (!validateSignatures(body)){
-            //HTTP 500 message is correct but there are misssing signatures
+            //HTTP 500 message is correct but there are missing signatures
             throw InternalServerErrorException("Missing signatures")
         }
 
@@ -180,7 +195,35 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     }
 
     override fun unregisterNode(uuid: UUID?, salt: String?): String {
-        TODO("Not yet implemented")
+        val node= nodes.find {node -> node.uuid == uuid!! && node.salt == salt!! }
+        if (node == null ){
+            throw BadRequestException("invalid UUID or salt")
+        }
+        val nodeIndex = nodes.indexOf(node)
+        val isLastNode = nodeIndex == nodes.size -1
+        if (isLastNode){
+            nodes.removeAt(nodeIndex)
+        }
+        else{
+            val previousNode= nodes[nodeIndex+1]
+            val nextNode= nodes[nodeIndex-1]
+            val url="http://${previousNode.host}:${previousNode.port}/reconfigure" +
+                    "?uuid=${previousNode.uuid}&salt=${previousNode.salt}&nextHost=${nextNode.host}&nextPort=${nextNode.port}"
+            val restTemplate= RestTemplate()
+            val httpHeaders = HttpHeaders().apply {
+                add("X-Game-Timestamp", xGameTimestamp.toString())
+            }
+            try{
+                val httpEntity= HttpEntity<Nothing?>(httpHeaders)
+                restTemplate.postForEntity<String>(url, httpEntity)
+                nodes.removeAt(nodeIndex)
+            }
+            catch (e: RestClientException){
+                println(e.message)
+                throw ServiceUnavailableException("Error while trying to unregister node")
+            }
+        }
+        return "Node unregistered"
     }
 
     override fun reconfigure(
@@ -190,14 +233,37 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         nextPort: Int?,
         xGameTimestamp: Int?
     ): String {
-        TODO("Not yet implemented")
+        if (uuid == nodeUUID && salt == nodeSalt){
+            throw BadRequestException("Invalid data")
+        }
+
+        nextNode= RegisterResponse(nextHost!!, nextPort!!, timeout, xGameTimestamp!!)
+        return "Node reconfigured"
     }
 
     internal fun registerToServer(registerHost: String, registerPort: Int) {
-        // @ToDo acá tienen que trabajar ustedes
-        val registerNodeResponse: RegisterResponse = RegisterResponse("", -1, 0, 0)
-        println("nextNode = ${registerNodeResponse}")
-//        nextNode = with(registerNodeResponse) { RegisterResponse(nextHost, nextPort, uuid, hash) }
+        val restTemplate= RestTemplate()
+        val registerUrl = "http://$registerHost:$registerPort/register-node"
+        val registerParams = "?host=localhost&port=$myServerPort&name=$myServerName&uuid=$nodeUUID&salt=$nodeSalt&name=$myServerName"
+        val url = registerUrl + registerParams
+
+
+        try {
+            val response = restTemplate.postForEntity<RegisterResponse>(url)
+            val registerNodeResponse: RegisterResponse = response.body!!
+            println("nextNode = $registerNodeResponse")
+            xGameTimestamp = registerNodeResponse.xGameTimestamp
+            nodeTimeout = registerNodeResponse.timeout
+            nextNode = with(registerNodeResponse) {
+                RegisterResponse(nextHost, nextPort, timeout, registerNodeResponse.xGameTimestamp)
+            }
+        } catch (e: RestClientException){
+            println("Could not register to: $registerUrl")
+            println("Params: $registerParams")
+            println("Error: ${e.message}")
+            println("Shutting down")
+            exitProcess(1)
+        }
     }
 
     private fun sendRelayMessage(
@@ -207,7 +273,49 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         signatures: Signatures,
         timestamp: Int
     ) {
+        if (timestamp < nodeTimestamp){
+            //HTTP 400 if X-Game-Timestamp header is invalid.
+            throw BadRequestException("Invalid timestamp")
+        }
 
+        val restTemplate = RestTemplate()
+        val relayEndpoint = "http://${relayNode.nextHost}:${relayNode.nextPort}/relay"
+
+        //create client signature and add it to signatures list
+        val clientSignature = clientSign(body, contentType)
+        val updatedSignatures = signatures.items + clientSignature
+        val newSignatures = Signatures(updatedSignatures)
+
+        //add content-type header
+        val headers = HttpHeaders()
+        headers.contentType = MediaType.parseMediaType(contentType)
+
+        // Create HttpEntity for message
+        val messageEntity = HttpEntity(body, headers)
+
+        // Add the message and signatures into multipart map
+        val multiPartBody: MultiValueMap<String, Any> = LinkedMultiValueMap<String, Any>().apply {
+            add("message", messageEntity)
+            add("signatures", newSignatures)
+        }
+
+        //set content type and timestamp header
+        val requestHeaders = HttpHeaders().apply {
+            setContentType(MediaType.MULTIPART_FORM_DATA)
+            add("X-Game-Timestamp", timestamp.toString())
+        }
+        val request = HttpEntity(multiPartBody, requestHeaders)
+
+        try {
+            restTemplate.postForEntity(relayEndpoint, request, Signature::class.java)
+            nodeTimestamp=timestamp
+        } catch (e: RestClientException) {
+            // Send failed play to center node
+            val hostUrl = "http://${registerHost}:${registerPort}/relay"
+            restTemplate.postForEntity<Map<String, Any>>(hostUrl, request)
+
+            throw ServiceUnavailableException("Error while trying to send relay")
+        }
     }
 
     private fun clientSign(message: String, contentType: String): Signature {

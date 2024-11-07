@@ -1,6 +1,7 @@
 package ar.edu.austral.inf.sd.server.api
 
 import ar.edu.austral.inf.sd.server.model.RegisterResponse
+import org.springframework.http.ResponseEntity
 
 interface RegisterNodeApiService {
 
@@ -19,5 +20,5 @@ interface RegisterNodeApiService {
      *         or Estás tratando de estafarme... El UUID ya existe pero mandaste la clave incorrecta. (status code 401)
      * @see RegisterNodeApi#registerNode
      */
-    fun registerNode(host: kotlin.String?, port: kotlin.Int?, uuid: java.util.UUID?, salt: kotlin.String?, name: kotlin.String?): RegisterResponse
+    fun registerNode(host: kotlin.String?, port: kotlin.Int?, uuid: java.util.UUID?, salt: kotlin.String?, name: kotlin.String?): ResponseEntity<RegisterResponse>
 }
